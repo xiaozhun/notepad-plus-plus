@@ -51,7 +51,7 @@ public:
 
 private:
 	std::vector<MatchedCharInserted> _insertedMatchedChars;
-	ScintillaEditView * _pEditView;
+	ScintillaEditView * _pEditView = nullptr;;
 };
 
 class AutoCompletion {
@@ -62,8 +62,7 @@ public:
 	};
 
 	~AutoCompletion(){
-		if (_pXmlFile)
-			delete _pXmlFile;
+		delete _pXmlFile;
 	};
 
 	bool setLanguage(LangType language);

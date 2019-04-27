@@ -35,6 +35,7 @@
 class Buffer;
 typedef Buffer * BufferID;	//each buffer has unique ID by which it can be retrieved
 
+#define SORT_DIRECTION_NONE     -1
 #define SORT_DIRECTION_UP     0
 #define SORT_DIRECTION_DOWN   1
 
@@ -87,8 +88,8 @@ public:
     };
 
 protected:
-	HIMAGELIST _hImaLst;
-	WNDPROC _defaultProc;
+	HIMAGELIST _hImaLst = nullptr;
+	WNDPROC _defaultProc = nullptr;
 	LRESULT runProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam);
 
 	static LRESULT CALLBACK staticProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam) {

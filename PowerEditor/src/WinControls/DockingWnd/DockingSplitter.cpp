@@ -44,7 +44,7 @@ static HHOOK	hookMouse		= NULL;
 
 static LRESULT CALLBACK hookProcMouse(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    if(nCode >= 0)
+    if (nCode >= 0)
     {
 		switch (wParam)
 		{
@@ -177,7 +177,7 @@ LRESULT DockingSplitter::runProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM 
 			if (hookMouse)
 			{
 				::UnhookWindowsHookEx(hookMouse);
-				::SetCapture(NULL);
+				::ReleaseCapture();
 				hookMouse = NULL;
 			}
 			_isLeftButtonDown = FALSE;

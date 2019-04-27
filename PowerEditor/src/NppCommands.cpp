@@ -37,10 +37,13 @@
 #include "functionListPanel.h"
 #include "fileBrowser.h"
 #include "Sorters.h"
+#include "verifySignedFile.h"
 #include "LongRunningOperation.h"
 #include "md5.h"
+#include "sha-256.h"
 
 using namespace std;
+
 
 void Notepad_plus::macroPlayback(Macro macro)
 {
@@ -51,7 +54,7 @@ void Notepad_plus::macroPlayback(Macro macro)
 
 	for (Macro::iterator step = macro.begin(); step != macro.end(); ++step)
 	{
-		if (step->isPlayable())
+		if (step->isScintillaMacro())
 			step->PlayBack(this->_pPublicInterface, _pEditView);
 		else
 			_findReplaceDlg.execSavedCommand(step->_message, step->_lParameter, step->_sParameter);
@@ -70,17 +73,6 @@ void Notepad_plus::command(int id)
 		case IDM_FILE_NEW:
 		{
 			fileNew();
-
-			/*
-			bool isFirstTime = ! _pluginsAdminDlg.isCreated();
-			_pluginsAdminDlg.setPluginsManager(&_pluginsManager);
-			_pluginsAdminDlg.doDialog(_nativeLangSpeaker.isRTL());
-			if (isFirstTime)
-			{
-				_nativeLangSpeaker.changeConfigLang(_pluginsAdminDlg.getHSelf());
-				_pluginsAdminDlg.updateListAndLoadFromJson();
-			}
-			*/
 		}
 		break;
 
@@ -99,8 +91,8 @@ void Notepad_plus::command(int id)
 
 		case IDM_FILE_OPEN_CMD:
 		{
-			Command cmd(TEXT("cmd /K cd /d $(CURRENT_DIRECTORY)"));
-			cmd.run(_pPublicInterface->getHSelf());
+			Command cmd(TEXT("cmd"));
+			cmd.run(_pPublicInterface->getHSelf(), TEXT("$(CURRENT_DIRECTORY)"));
 		}
 		break;
 		
@@ -114,7 +106,7 @@ void Notepad_plus::command(int id)
 			// As per MSDN (https://msdn.microsoft.com/en-us/library/windows/desktop/bb762153(v=vs.85).aspx)
 			// If the function succeeds, it returns a value greater than 32.
 			// If the function fails, it returns an error value that indicates the cause of the failure.
-			int retResult = reinterpret_cast<int>(res);
+			int retResult = static_cast<int>(reinterpret_cast<INT_PTR>(res));
 			if (retResult <= 32)
 			{
 				generic_string errorMsg;
@@ -220,6 +212,11 @@ void Notepad_plus::command(int id)
 
 		case IDM_FILE_CLOSEALL_TORIGHT :
 			fileCloseAllToRight();
+			checkDocState();
+			break;
+
+		case IDM_FILE_CLOSEALL_UNCHANGED:
+			fileCloseAllUnchanged();
 			checkDocState();
 			break;
 
@@ -411,7 +408,7 @@ void Notepad_plus::command(int id)
 			TCHAR cmd2Exec[CURRENTWORD_MAXLENGTH];
 			if (id == IDM_EDIT_OPENINFOLDER)
 			{
-				lstrcpy(cmd2Exec, TEXT("explorer"));
+				wcscpy_s(cmd2Exec, TEXT("explorer"));
 			}
 			else
 			{
@@ -466,13 +463,15 @@ void Notepad_plus::command(int id)
 			generic_string url;
 			if (nppGui._searchEngineChoice == nppGui.se_custom)
 			{
-				if (nppGui._searchEngineCustom.empty())
+				url = nppGui._searchEngineCustom;
+				remove_if(url.begin(), url.end(), isspace);
+
+				auto httpPos = url.find(TEXT("http://"));
+				auto httpsPos = url.find(TEXT("https://"));
+
+				if (url.empty() || (httpPos != 0 && httpsPos != 0)) // if string is not a url (for launching only browser)
 				{
 					url = TEXT("https://www.google.com/search?q=$(CURRENT_WORD)");
-				}
-				else
-				{
-					url = nppGui._searchEngineCustom.c_str();
 				}
 			}
 			else if (nppGui._searchEngineChoice == nppGui.se_duckDuckGo)
@@ -491,6 +490,10 @@ void Notepad_plus::command(int id)
 			{
 				url = TEXT("https://search.yahoo.com/search?q=$(CURRENT_WORD)");
 			}
+			else if (nppGui._searchEngineChoice == nppGui.se_stackoverflow)
+			{
+				url = TEXT("https://stackoverflow.com/search?q=$(CURRENT_WORD)");
+			}
 
 			Command cmd(url.c_str());
 			cmd.run(_pPublicInterface->getHSelf());	
@@ -499,7 +502,7 @@ void Notepad_plus::command(int id)
 
 		case IDM_EDIT_CHANGESEARCHENGINE:
 		{
-			command(IDM_SETTING_PREFERECE);
+			command(IDM_SETTING_PREFERENCE);
 			_preference.showDialogByName(TEXT("SearchEngine"));
 		}
 		break;
@@ -612,7 +615,7 @@ void Notepad_plus::command(int id)
 			}
 			else if (id == IDM_EDIT_SORTLINES_INTEGER_DESCENDING || id == IDM_EDIT_SORTLINES_INTEGER_ASCENDING)
 			{
-				pSorter = std::unique_ptr<ISorter>(new IntegerSorter(isDescending, fromColumn, toColumn));
+				pSorter = std::unique_ptr<ISorter>(new NaturalSorter(isDescending, fromColumn, toColumn));
 			}
 			else if (id == IDM_EDIT_SORTLINES_DECIMALCOMMA_DESCENDING || id == IDM_EDIT_SORTLINES_DECIMALCOMMA_ASCENDING)
 			{
@@ -628,14 +631,15 @@ void Notepad_plus::command(int id)
 			}
 			catch (size_t& failedLineIndex)
 			{
-				generic_string lineNo = std::to_wstring(1 + fromLine + failedLineIndex);
+				size_t lineNo = 1 + fromLine + failedLineIndex;
+
 				_nativeLangSpeaker.messageBox("SortingError",
 					_pPublicInterface->getHSelf(),
-					TEXT("Unable to perform numeric sort due to line $STR_REPLACE$."),
+					TEXT("Unable to perform numeric sorting due to line $INT_REPLACE$."),
 					TEXT("Sorting Error"),
 					MB_OK | MB_ICONINFORMATION | MB_APPLMODAL,
-					0,
-					lineNo.c_str()); // We don't use intInfo since it would require casting size_t -> int.
+					static_cast<int>(lineNo),
+					0);
 			}
 			_pEditView->execute(SCI_ENDUNDOACTION);
 
@@ -783,15 +787,19 @@ void Notepad_plus::command(int id)
 		{
 			const int index = id - IDM_VIEW_TAB1;
 			BufferID buf = _pDocTab->getBufferByIndex(index);
-			if(buf == BUFFER_INVALID)
+			_isFolding = true;
+			if (buf == BUFFER_INVALID)
 			{
 				// No buffer at chosen index, select the very last buffer instead.
 				const int last_index = _pDocTab->getItemCount() - 1;
-				if(last_index > 0)
+				if (last_index > 0)
 					switchToFile(_pDocTab->getBufferByIndex(last_index));
 			}
 			else
+			{
 				switchToFile(buf);
+			}
+			_isFolding = false;
 		}
 		break;
 
@@ -799,23 +807,29 @@ void Notepad_plus::command(int id)
 		{
 			const int current_index = _pDocTab->getCurrentTabIndex();
 			const int last_index = _pDocTab->getItemCount() - 1;
-			if(current_index < last_index)
+			_isFolding = true;
+			if (current_index < last_index)
 				switchToFile(_pDocTab->getBufferByIndex(current_index + 1));
 			else
+			{
 				switchToFile(_pDocTab->getBufferByIndex(0)); // Loop around.
+			}
+			_isFolding = false;
 		}
 		break;
 
 		case IDM_VIEW_TAB_PREV:
 		{
 			const int current_index = _pDocTab->getCurrentTabIndex();
-			if(current_index > 0)
+			_isFolding = true;
+			if (current_index > 0)
 				switchToFile(_pDocTab->getBufferByIndex(current_index - 1));
 			else
 			{
 				const int last_index = _pDocTab->getItemCount() - 1;
 				switchToFile(_pDocTab->getBufferByIndex(last_index)); // Loop around.
 			}
+			_isFolding = false;
 		}
 		break;
 
@@ -897,6 +911,7 @@ void Notepad_plus::command(int id)
 				_subEditView.execute(SCI_STARTRECORD);
 				_recordingMacro = true;
 			}
+			_recordingSaved = false;
 			checkMacroState();
 			break;
 		}
@@ -928,7 +943,11 @@ void Notepad_plus::command(int id)
 		case IDM_MACRO_SAVECURRENTMACRO :
 		{
 			if (addCurrentMacro())
+			{
+				_recordingSaved = true;
 				_runMacroDlg.initMacroList();
+				checkMacroState();
+			}
 			break;
 		}
 		case IDM_EDIT_FULLPATHTOCLIP :
@@ -1009,10 +1028,15 @@ void Notepad_plus::command(int id)
 			FindStatus status = FSNoMessage;
 			_findReplaceDlg.processFindNext(s.c_str(), &op, &status);
 			if (status == FSEndReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the top. The end of document has been reached."), FSEndReached);
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-end-reached", TEXT("Find: Found the 1st occurrence from the top. The end of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSEndReached);
+			}
 			else if (status == FSTopReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the bottom. The begin of document has been reached."), FSTopReached);
-			break;
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-top-reached", TEXT("Find: Found the 1st occurrence from the bottom. The beginning of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSTopReached);
+			}
 		}
 		break;
 
@@ -1038,22 +1062,30 @@ void Notepad_plus::command(int id)
 			FindStatus status = FSNoMessage;
 			_findReplaceDlg.processFindNext(str, &op, &status);
 			if (status == FSEndReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the top. The end of document has been reached."), FSEndReached);
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-end-reached", TEXT("Find: Found the 1st occurrence from the top. The end of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSEndReached);
+			}
 			else if (status == FSTopReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the bottom. The begin of document has been reached."), FSTopReached);
-			break;
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-top-reached", TEXT("Find: Found the 1st occurrence from the bottom. The beginning of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSTopReached);
+			}
         }
+		break;
 
 		case IDM_SEARCH_GOTONEXTFOUND:
 		{
 			_findReplaceDlg.gotoNextFoundResult();
-			break;
 		}
+		break;
+
 		case IDM_SEARCH_GOTOPREVFOUND:
 		{
 			_findReplaceDlg.gotoNextFoundResult(-1);
-			break;
 		}
+		break;
+
 		case IDM_FOCUS_ON_FOUND_RESULTS:
 		{
 			if (GetFocus() == _findReplaceDlg.getHFindResults())
@@ -1061,8 +1093,8 @@ void Notepad_plus::command(int id)
 				switchEditViewTo(currentView());
 			else
 				_findReplaceDlg.focusOnFinder();
-			break;
 		}
+		break;
 
 		case IDM_SEARCH_VOLATILE_FINDNEXT :
 		case IDM_SEARCH_VOLATILE_FINDPREV :
@@ -1077,12 +1109,17 @@ void Notepad_plus::command(int id)
 			FindStatus status = FSNoMessage;
 			_findReplaceDlg.processFindNext(text2Find, &op, &status);
 			if (status == FSEndReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the top. The end of document has been reached."), FSEndReached);
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-end-reached", TEXT("Find: Found the 1st occurrence from the top. The end of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSEndReached);
+			}
 			else if (status == FSTopReached)
-				_findReplaceDlg.setStatusbarMessage(TEXT("Find: Found the 1st occurrence from the bottom. The begin of document has been reached."), FSTopReached);
-
-			break;
+			{
+				generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID("find-status-top-reached", TEXT("Find: Found the 1st occurrence from the bottom. The beginning of the document has been reached."));
+				_findReplaceDlg.setStatusbarMessage(msg, FSTopReached);
+			}
 		}
+		break;
 
 		case IDM_SEARCH_MARKALLEXT1 :
 		case IDM_SEARCH_MARKALLEXT2 :
@@ -1117,8 +1154,9 @@ void Notepad_plus::command(int id)
 			{
 				_findReplaceDlg.markAll(text2Find, styleID, lstrlen(text2Find) == lstrlen(text2Find2));
 			}
-			break;
 		}
+		break;
+
 		case IDM_SEARCH_UNMARKALLEXT1 :
 		case IDM_SEARCH_UNMARKALLEXT2 :
 		case IDM_SEARCH_UNMARKALLEXT3 :
@@ -1138,8 +1176,8 @@ void Notepad_plus::command(int id)
 				styleID = SCE_UNIVERSAL_FOUND_STYLE_EXT5;
 
 			_pEditView->clearIndicator(styleID);
-			break;
 		}
+		break;
 
 		case IDM_SEARCH_GONEXTMARKER1 :
 		case IDM_SEARCH_GONEXTMARKER2 :
@@ -1163,9 +1201,8 @@ void Notepad_plus::command(int id)
 				styleID = SCE_UNIVERSAL_FOUND_STYLE;
 
 			goToNextIndicator(styleID);
-
-			break;
 		}
+		break;
 
 		case IDM_SEARCH_GOPREVMARKER1 :
 		case IDM_SEARCH_GOPREVMARKER2 :
@@ -1188,10 +1225,9 @@ void Notepad_plus::command(int id)
 			else // (id == IDM_SEARCH_GOPREVMARKER_DEF)
 				styleID = SCE_UNIVERSAL_FOUND_STYLE;
 
-			goToPreviousIndicator(styleID);
-
-			break;
+			goToPreviousIndicator(styleID);	
 		}
+		break;
 
 		case IDM_SEARCH_CLEARALLMARKS :
 		{
@@ -1200,8 +1236,8 @@ void Notepad_plus::command(int id)
 			_pEditView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_EXT3);
 			_pEditView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_EXT4);
 			_pEditView->clearIndicator(SCE_UNIVERSAL_FOUND_STYLE_EXT5);
-			break;
 		}
+		break;
 
         case IDM_SEARCH_GOTOLINE :
 		{
@@ -1209,8 +1245,8 @@ void Notepad_plus::command(int id)
 			_goToLineDlg.doDialog(_nativeLangSpeaker.isRTL());
 			if (isFirstTime)
 				_nativeLangSpeaker.changeDlgLang(_goToLineDlg.getHSelf(), "GoToLine");
-			break;
 		}
+		break;
 
 		case IDM_SEARCH_FINDCHARINRANGE :
 		{
@@ -1218,8 +1254,8 @@ void Notepad_plus::command(int id)
 			_findCharsInRangeDlg.doDialog(_nativeLangSpeaker.isRTL());
 			if (isFirstTime)
 				_nativeLangSpeaker.changeDlgLang(_findCharsInRangeDlg.getHSelf(), "FindCharsInRange");
-			break;
 		}
+		break;
 
         case IDM_EDIT_COLUMNMODETIP :
 		{
@@ -1228,8 +1264,8 @@ void Notepad_plus::command(int id)
 					TEXT("Please use \"ALT+Mouse Selection\" or \"Alt+Shift+Arrow key\" to switch to column mode."),
 					TEXT("Column Mode Tip"),
 					MB_OK|MB_APPLMODAL);
-			break;
 		}
+		break;
 
         case IDM_EDIT_COLUMNMODE :
 		{
@@ -1237,8 +1273,8 @@ void Notepad_plus::command(int id)
 			_colEditorDlg.doDialog(_nativeLangSpeaker.isRTL());
 			if (isFirstTime)
 				_nativeLangSpeaker.changeDlgLang(_colEditorDlg.getHSelf(), "ColumnEditor");
-			break;
 		}
+		break;
 
 		case IDM_SEARCH_GOTOMATCHINGBRACE :
 		case IDM_SEARCH_SELECTMATCHINGBRACES :
@@ -1249,13 +1285,13 @@ void Notepad_plus::command(int id)
 
 			if (braceOpposite != -1)
 			{
-				if(id == IDM_SEARCH_GOTOMATCHINGBRACE)
+				if (id == IDM_SEARCH_GOTOMATCHINGBRACE)
 					_pEditView->execute(SCI_GOTOPOS, braceOpposite);
 				else
 					_pEditView->execute(SCI_SETSEL, min(braceAtCaret, braceOpposite), max(braceAtCaret, braceOpposite) + 1); // + 1 so we always include the ending brace in the selection.
 			}
-			break;
 		}
+		break;
 
         case IDM_SEARCH_TOGGLE_BOOKMARK :
 	        bookmarkToggle(-1);
@@ -1340,9 +1376,8 @@ void Notepad_plus::command(int id)
 			}
 			checkMenuItem(IDM_LANG_USER_DLG, !isUDDlgVisible);
 			_toolBar.setCheck(IDM_LANG_USER_DLG, !isUDDlgVisible);
-
-            break;
         }
+		break;
 
 		case IDM_EDIT_SELECTALL:
 			_pEditView->execute(SCI_SELECTALL);
@@ -1359,6 +1394,12 @@ void Notepad_plus::command(int id)
 
 		case IDM_EDIT_DUP_LINE:
 			_pEditView->execute(SCI_LINEDUPLICATE);
+			break;
+
+		case IDM_EDIT_REMOVE_DUP_LINES:
+			_pEditView->execute(SCI_BEGINUNDOACTION);
+			removeDuplicateLines();
+			_pEditView->execute(SCI_ENDUNDOACTION);
 			break;
 
 		case IDM_EDIT_SPLIT_LINES:
@@ -1453,23 +1494,35 @@ void Notepad_plus::command(int id)
 			break;
 
 		case IDM_EDIT_TRIMTRAILING:
+		{
+			LongRunningOperation op;
+
 			_pEditView->execute(SCI_BEGINUNDOACTION);
 			doTrim(lineTail);
 			_pEditView->execute(SCI_ENDUNDOACTION);
 			break;
+		}
 
 		case IDM_EDIT_TRIMLINEHEAD:
+		{
+			LongRunningOperation op;
+
 			_pEditView->execute(SCI_BEGINUNDOACTION);
 			doTrim(lineHeader);
 			_pEditView->execute(SCI_ENDUNDOACTION);
 			break;
+		}
 
 		case IDM_EDIT_TRIM_BOTH:
+		{
+			LongRunningOperation op;
+
 			_pEditView->execute(SCI_BEGINUNDOACTION);
 			doTrim(lineTail);
 			doTrim(lineHeader);
 			_pEditView->execute(SCI_ENDUNDOACTION);
 			break;
+		}
 
 		case IDM_EDIT_EOL2WS:
 			_pEditView->execute(SCI_BEGINUNDOACTION);
@@ -1479,6 +1532,9 @@ void Notepad_plus::command(int id)
 			break;
 
 		case IDM_EDIT_TRIMALL:
+		{
+			LongRunningOperation op;
+
 			_pEditView->execute(SCI_BEGINUNDOACTION);
 			doTrim(lineTail);
 			doTrim(lineHeader);
@@ -1486,6 +1542,7 @@ void Notepad_plus::command(int id)
 			_pEditView->execute(SCI_LINESJOIN);
 			_pEditView->execute(SCI_ENDUNDOACTION);
 			break;
+		}
 
 		case IDM_EDIT_TAB2SW:
 			wsTabConvert(tab2Space);
@@ -1728,6 +1785,74 @@ void Notepad_plus::command(int id)
 		}
 		break;
 
+		case IDM_VIEW_IN_FIREFOX:
+		case IDM_VIEW_IN_CHROME:
+		case IDM_VIEW_IN_IE:
+		{
+			auto currentBuf = _pEditView->getCurrentBuffer();
+			if (!currentBuf->isUntitled())
+			{
+				generic_string appName;
+
+				if (id == IDM_VIEW_IN_FIREFOX)
+				{
+					appName = TEXT("firefox.exe");
+				}
+				else if (id == IDM_VIEW_IN_CHROME)
+				{
+					appName = TEXT("chrome.exe");
+				}
+				else // if (id == IDM_VIEW_IN_IE)
+				{
+					appName = TEXT("IEXPLORE.EXE");
+				}
+
+				TCHAR valData[MAX_PATH] = {'\0'};
+				DWORD valDataLen = MAX_PATH * sizeof(TCHAR);
+				DWORD valType;
+				HKEY hKey2Check = nullptr;
+				generic_string appEntry = TEXT("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\");
+				appEntry += appName;
+				::RegOpenKeyEx(HKEY_LOCAL_MACHINE, appEntry.c_str(), 0, KEY_READ, &hKey2Check);
+				::RegQueryValueEx(hKey2Check, TEXT(""), nullptr, &valType, reinterpret_cast<LPBYTE>(valData), &valDataLen);
+
+
+				generic_string fullCurrentPath = TEXT("\"");
+				fullCurrentPath += currentBuf->getFullPathName();
+				fullCurrentPath += TEXT("\"");
+
+				if (hKey2Check && valData[0] != '\0')
+				{
+					::ShellExecute(NULL, TEXT("open"), valData, fullCurrentPath.c_str(), NULL, SW_SHOWNORMAL);
+				}
+				else
+				{
+					_nativeLangSpeaker.messageBox("ViewInBrowser",
+						_pPublicInterface->getHSelf(),
+						TEXT("Application cannot be found in your system."),
+						TEXT("View Current File in Browser"),
+						MB_OK);
+				}
+				::RegCloseKey(hKey2Check);
+			}
+		}
+		break;
+		
+		case IDM_VIEW_IN_EDGE:
+		{
+			auto currentBuf = _pEditView->getCurrentBuffer();
+			if (!currentBuf->isUntitled())
+			{
+				// Don't put the quots for Edge, otherwise it doesn't work
+				//fullCurrentPath = TEXT("\"");
+				generic_string fullCurrentPath = currentBuf->getFullPathName();
+				//fullCurrentPath += TEXT("\"");
+
+				ShellExecute(NULL, TEXT("open"), TEXT("shell:Appsfolder\\Microsoft.MicrosoftEdge_8wekyb3d8bbwe!MicrosoftEdge"), fullCurrentPath.c_str(), NULL, SW_SHOW);
+			}
+		}
+		break;
+
 		case IDM_VIEW_TAB_SPACE:
 		{
 			bool isChecked = !(::GetMenuState(_mainMenuHandle, IDM_VIEW_TAB_SPACE, MF_BYCOMMAND) == MF_CHECKED);
@@ -1891,14 +2016,14 @@ void Notepad_plus::command(int id)
 			generic_string characterNumber = TEXT("");
 
 			Buffer * curBuf = _pEditView->getCurrentBuffer();
-			int fileLen = curBuf->getFileLength();
+			int64_t fileLen = curBuf->getFileLength();
 
 			if (fileLen != -1)
 			{
-				TCHAR *filePathLabel = TEXT("Full file path: ");
-				TCHAR *fileCreateTimeLabel = TEXT("Created: ");
-				TCHAR *fileModifyTimeLabel = TEXT("Modified: ");
-				TCHAR *fileLenLabel = TEXT("File length (in byte): ");
+				const TCHAR *filePathLabel = TEXT("Full file path: ");
+				const TCHAR *fileCreateTimeLabel = TEXT("Created: ");
+				const TCHAR *fileModifyTimeLabel = TEXT("Modified: ");
+				const TCHAR *fileLenLabel = TEXT("File length (in byte): ");
 
 				characterNumber += filePathLabel;
 				characterNumber += curBuf->getFullPathName();
@@ -1913,17 +2038,17 @@ void Notepad_plus::command(int id)
 				characterNumber += TEXT("\r");
 
 				characterNumber += fileLenLabel;
-				characterNumber += commafyInt(static_cast<UINT64>(fileLen)).c_str();
+				characterNumber += commafyInt(static_cast<size_t>(fileLen)).c_str();
 				characterNumber += TEXT("\r");
 				characterNumber += TEXT("\r");
 			}
-			TCHAR *nbCharLabel = TEXT("Characters (without blanks): ");
-			TCHAR *nbWordLabel = TEXT("Words: ");
-			TCHAR *nbLineLabel = TEXT("Lines: ");
-			TCHAR *nbByteLabel = TEXT("Current document length: ");
-			TCHAR *nbSelLabel1 = TEXT(" selected characters (");
-			TCHAR *nbSelLabel2 = TEXT(" bytes) in ");
-			TCHAR *nbRangeLabel = TEXT(" ranges");
+			const TCHAR *nbCharLabel = TEXT("Characters (without line endings): ");
+			const TCHAR *nbWordLabel = TEXT("Words: ");
+			const TCHAR *nbLineLabel = TEXT("Lines: ");
+			const TCHAR *nbByteLabel = TEXT("Current document length: ");
+			const TCHAR *nbSelLabel1 = TEXT(" selected characters (");
+			const TCHAR *nbSelLabel2 = TEXT(" bytes) in ");
+			const TCHAR *nbRangeLabel = TEXT(" ranges");
 
 			UniMode um = _pEditView->getCurrentBuffer()->getUnicodeMode();
 			auto nbChar = getCurrentDocCharCount(um);
@@ -1967,10 +2092,7 @@ void Notepad_plus::command(int id)
 			Buffer * curBuf = _pEditView->getCurrentBuffer();
 			if (curBuf->isMonitoringOn())
 			{
-				curBuf->stopMonitoring();
-				checkMenuItem(IDM_VIEW_MONITORING, false);
-				_toolBar.setCheck(IDM_VIEW_MONITORING, false);
-				curBuf->setUserReadOnly(false);
+				monitoringStartOrStopAndUpdateUI(curBuf, false);
 			}
 			else
 			{
@@ -1979,23 +2101,29 @@ void Notepad_plus::command(int id)
 				{
 					if (curBuf->isDirty())
 					{
-						::MessageBox(_pPublicInterface->getHSelf(), TEXT("The document is dirty. Please save the modification before monitoring it."), TEXT("Monitoring problem"), MB_OK);
+						_nativeLangSpeaker.messageBox("DocTooDirtyToMonitor",
+							_pPublicInterface->getHSelf(),
+							TEXT("The document is dirty. Please save the modification before monitoring it."),
+							TEXT("Monitoring problem"),
+							MB_OK);
 					}
 					else
 					{
-						curBuf->startMonitoring(); // monitoring firstly for making monitoring icon 
-						curBuf->setUserReadOnly(true);
+						// Monitoring firstly for making monitoring icon
+						monitoringStartOrStopAndUpdateUI(curBuf, true);
 						
 						MonitorInfo *monitorInfo = new MonitorInfo(curBuf, _pPublicInterface->getHSelf());
 						HANDLE hThread = ::CreateThread(NULL, 0, monitorFileOnChange, (void *)monitorInfo, 0, NULL); // will be deallocated while quitting thread
 						::CloseHandle(hThread);
-						checkMenuItem(IDM_VIEW_MONITORING, true);
-						_toolBar.setCheck(IDM_VIEW_MONITORING, true);
 					}
 				}
 				else
 				{
-					::MessageBox(_pPublicInterface->getHSelf(), TEXT("The file should exist to be monitored."), TEXT("Monitoring problem"), MB_OK);
+					_nativeLangSpeaker.messageBox("DocNoExistToMonitor",
+						_pPublicInterface->getHSelf(),
+						TEXT("The file should exist to be monitored."),
+						TEXT("Monitoring problem"),
+						MB_OK);
 				}
 			}
 
@@ -2071,7 +2199,7 @@ void Notepad_plus::command(int id)
 				if (buf->isDirty())
 				{
 					int answer = _nativeLangSpeaker.messageBox("SaveCurrentModifWarning",
-						NULL,
+						_pPublicInterface->getHSelf(),
 						TEXT("You should save the current modification.\rAll the saved modifications can not be undone.\r\rContinue?"),
 						TEXT("Save Current Modification"),
 						MB_YESNO);
@@ -2089,7 +2217,7 @@ void Notepad_plus::command(int id)
 				{
 					generic_string msg, title;
 					int answer = _nativeLangSpeaker.messageBox("LoseUndoAbilityWarning",
-						NULL,
+						_pPublicInterface->getHSelf(),
 						TEXT("You should save the current modification.\rAll the saved modifications can not be undone.\r\rContinue?"),
 						TEXT("Lose Undo Ability Waning"),
 						MB_YESNO);
@@ -2139,12 +2267,9 @@ void Notepad_plus::command(int id)
         case IDM_FORMAT_ISO_8859_7  :
         case IDM_FORMAT_ISO_8859_8  :
         case IDM_FORMAT_ISO_8859_9  :
-        //case IDM_FORMAT_ISO_8859_10 :
-        //case IDM_FORMAT_ISO_8859_11 :
         case IDM_FORMAT_ISO_8859_13 :
         case IDM_FORMAT_ISO_8859_14 :
         case IDM_FORMAT_ISO_8859_15 :
-        //case IDM_FORMAT_ISO_8859_16 :
         case IDM_FORMAT_DOS_437 :
         case IDM_FORMAT_DOS_720 :
         case IDM_FORMAT_DOS_737 :
@@ -2186,7 +2311,7 @@ void Notepad_plus::command(int id)
             {
 				generic_string warning, title;
 				int answer = _nativeLangSpeaker.messageBox("SaveCurrentModifWarning",
-					NULL,
+					_pPublicInterface->getHSelf(),
 					TEXT("You should save the current modification.\rAll the saved modifications can not be undone.\r\rContinue?"),
 					TEXT("Save Current Modification"),
 					MB_YESNO);
@@ -2204,7 +2329,7 @@ void Notepad_plus::command(int id)
             {
 				generic_string msg, title;
 				int answer = _nativeLangSpeaker.messageBox("LoseUndoAbilityWarning",
-					NULL,
+					_pPublicInterface->getHSelf(),
 					TEXT("You should save the current modification.\rAll the saved modifications can not be undone.\r\rContinue?"),
 					TEXT("Lose Undo Ability Waning"),
 					MB_YESNO);
@@ -2390,33 +2515,30 @@ void Notepad_plus::command(int id)
 
 		case IDM_SETTING_IMPORTPLUGIN :
         {
-            // get plugin source path
-            TCHAR *extFilterName = TEXT("Notepad++ plugin");
-            TCHAR *extFilter = TEXT(".dll");
-            TCHAR *destDir = TEXT("plugins");
+			// Copy plugins to Plugins Home
+            const TCHAR *extFilterName = TEXT("Notepad++ plugin");
+            const TCHAR *extFilter = TEXT(".dll");
+            vector<generic_string> copiedFiles = addNppPlugins(extFilterName, extFilter);
 
-            vector<generic_string> copiedFiles = addNppComponents(destDir, extFilterName, extFilter);
-
-            // load plugin
-            vector<generic_string> dll2Remove;
-            for (size_t i = 0, len = copiedFiles.size() ; i < len ; ++i)
-            {
-                int index = _pluginsManager.loadPlugin(copiedFiles[i].c_str(), dll2Remove);
-                if (_pluginsManager.getMenuHandle())
-                    _pluginsManager.addInMenuFromPMIndex(index);
-            }
-            if (!_pluginsManager.getMenuHandle())
-                _pluginsManager.setMenu(_mainMenuHandle, NULL);
-            ::DrawMenuBar(_pPublicInterface->getHSelf());
+            // Tell users to restart Notepad++ to load plugin
+			if (copiedFiles.size())
+			{
+				NativeLangSpeaker *pNativeSpeaker = (NppParameters::getInstance())->getNativeLangSpeaker();
+				pNativeSpeaker->messageBox("NeedToRestartToLoadPlugins",
+					NULL,
+					TEXT("You have to restart Notepad++ to load plugins you installed."),
+					TEXT("Notepad++ need to be relaunched"),
+					MB_OK | MB_APPLMODAL);
+			}
             break;
         }
 
         case IDM_SETTING_IMPORTSTYLETHEMS :
         {
             // get plugin source path
-            TCHAR *extFilterName = TEXT("Notepad++ style theme");
-            TCHAR *extFilter = TEXT(".xml");
-            TCHAR *destDir = TEXT("themes");
+            const TCHAR *extFilterName = TEXT("Notepad++ style theme");
+            const TCHAR *extFilter = TEXT(".xml");
+            const TCHAR *destDir = TEXT("themes");
 
             // load styler
             NppParameters *pNppParams = NppParameters::getInstance();
@@ -2438,6 +2560,28 @@ void Notepad_plus::command(int id)
             break;
         }
 
+		case IDM_SETTING_PLUGINADM:
+		{
+			bool isFirstTime = !_pluginsAdminDlg.isCreated();
+			_pluginsAdminDlg.doDialog(_nativeLangSpeaker.isRTL());
+			if (isFirstTime)
+			{
+				_nativeLangSpeaker.changePluginsAdminDlgLang(_pluginsAdminDlg);
+				_pluginsAdminDlg.updateListAndLoadFromJson();
+			}
+			break;
+		}
+
+		case IDM_SETTING_OPENPLUGINSDIR:
+		{
+			const TCHAR* pluginHomePath = NppParameters::getInstance()->getPluginRootDir();
+			if (pluginHomePath && pluginHomePath[0])
+			{
+				::ShellExecute(NULL, NULL, pluginHomePath, NULL, NULL, SW_SHOWNORMAL);
+			}
+			break;
+		}
+
 		case IDM_SETTING_SHORTCUT_MAPPER :
 		case IDM_SETTING_SHORTCUT_MAPPER_MACRO :
         case IDM_SETTING_SHORTCUT_MAPPER_RUN :
@@ -2445,12 +2589,11 @@ void Notepad_plus::command(int id)
             GridState st = id==IDM_SETTING_SHORTCUT_MAPPER_MACRO?STATE_MACRO:id==IDM_SETTING_SHORTCUT_MAPPER_RUN?STATE_USER:STATE_MENU;
 			ShortcutMapper shortcutMapper;
             shortcutMapper.init(_pPublicInterface->getHinst(), _pPublicInterface->getHSelf(), st);
-            _nativeLangSpeaker.changeShortcutmapperLang(&shortcutMapper);
 			shortcutMapper.doDialog(_nativeLangSpeaker.isRTL());
 			shortcutMapper.destroy();
 			break;
 		}
-		case IDM_SETTING_PREFERECE :
+		case IDM_SETTING_PREFERENCE:
 		{
 			bool isFirstTime = !_preference.isCreated();
 			_preference.doDialog(_nativeLangSpeaker.isRTL());
@@ -2554,6 +2697,53 @@ void Notepad_plus::command(int id)
 		}
 		break;
 
+		case IDM_TOOL_SHA256_GENERATE:
+		{
+			bool isFirstTime = !_sha2FromTextDlg.isCreated();
+			_sha2FromTextDlg.doDialog(_nativeLangSpeaker.isRTL());
+			if (isFirstTime)
+				_nativeLangSpeaker.changeDlgLang(_sha2FromTextDlg.getHSelf(), "SHA256FromTextDlg");
+		}
+		break;
+
+		case IDM_TOOL_SHA256_GENERATEFROMFILE:
+		{
+			bool isFirstTime = !_sha2FromFilesDlg.isCreated();
+			_sha2FromFilesDlg.doDialog(_nativeLangSpeaker.isRTL());
+			if (isFirstTime)
+				_nativeLangSpeaker.changeDlgLang(_sha2FromFilesDlg.getHSelf(), "SHA256FromFilesDlg");
+		}
+		break;
+
+		case IDM_TOOL_SHA256_GENERATEINTOCLIPBOARD:
+		{
+			if (_pEditView->execute(SCI_GETSELECTIONS) == 1)
+			{
+				size_t selectionStart = _pEditView->execute(SCI_GETSELECTIONSTART);
+				size_t selectionEnd = _pEditView->execute(SCI_GETSELECTIONEND);
+
+				int32_t strLen = static_cast<int32_t>(selectionEnd - selectionStart);
+				if (strLen)
+				{
+					int strSize = strLen + 1;
+					char *selectedStr = new char[strSize];
+					_pEditView->execute(SCI_GETSELTEXT, 0, reinterpret_cast<LPARAM>(selectedStr));
+
+					uint8_t sha2hash[32];
+					calc_sha_256(sha2hash, reinterpret_cast<const uint8_t*>(selectedStr), strlen(selectedStr));
+
+					wchar_t sha2hashStr[65] = { '\0' };
+					for (size_t i = 0; i < 32; i++)
+						wsprintf(sha2hashStr + i * 2, TEXT("%02x"), sha2hash[i]);
+
+					str2Clipboard(sha2hashStr, _pPublicInterface->getHSelf());
+
+					delete[] selectedStr;
+				}
+			}
+		}
+		break;
+
 		case IDM_DEBUGINFO:
 		{
 			_debugInfoDlg.doDialog();
@@ -2574,7 +2764,9 @@ void Notepad_plus::command(int id)
 			{
 				char author[maxSelLen+1] = "";
 				_pEditView->getSelectedText(author, maxSelLen + 1);
-				int iQuote = getQuoteIndexFrom(author);
+				WcharMbcsConvertor *wmc = WcharMbcsConvertor::getInstance();
+				const wchar_t * authorW = wmc->char2wchar(author, _nativeLangSpeaker.getLangEncoding());
+				int iQuote = getQuoteIndexFrom(authorW);
 
 				if (iQuote == -1)
 				{
@@ -2606,7 +2798,7 @@ void Notepad_plus::command(int id)
 				{
 					if (_nativeLangSpeaker.getLangEncoding() == NPP_CP_BIG5)
 					{
-						char *authorName = "«J¤µ§^";
+						const char *authorName = "«J¤µ§^";
 						HWND hItem = ::GetDlgItem(_aboutDlg.getHSelf(), IDC_AUTHOR_NAME);
 
 						WcharMbcsConvertor *wmc = WcharMbcsConvertor::getInstance();
@@ -2660,6 +2852,7 @@ void Notepad_plus::command(int id)
 
 		case IDM_CMDLINEARGUMENTS:
 		{
+			// No translattable
 			::MessageBox(NULL, COMMAND_ARG_HELP, TEXT("Notepad++ Command Argument Help"), MB_OK);
 			break;
 		}
@@ -2675,13 +2868,13 @@ void Notepad_plus::command(int id)
 			::ShellExecute(NULL, TEXT("open"), TEXT("https://gitter.im/notepad-plus-plus/notepad-plus-plus"), NULL, NULL, SW_SHOWNORMAL);
 			break;
 		}
-
+		/*
 		case IDM_PLUGINSHOME:
 		{
 			::ShellExecute(NULL, TEXT("open"), TEXT("http://docs.notepad-plus-plus.org/index.php/Plugin_Central"), NULL, NULL, SW_SHOWNORMAL);
 			break;
 		}
-
+		*/
 		case IDM_UPDATE_NPP :
 		case IDM_CONFUPDATERPROXY :
 		{
@@ -2689,7 +2882,12 @@ void Notepad_plus::command(int id)
 			winVer ver = NppParameters::getInstance()->getWinVersion();
 			if (ver <= WV_XP)
 			{
-				long res = ::MessageBox(NULL, TEXT("Notepad++ updater is not compatible with XP due to the obsolete security layer under XP.\rDo you want to go to Notepad++ page to download the latest version?"), TEXT("Notepad++ Updater"), MB_YESNO);
+				long res = _nativeLangSpeaker.messageBox("XpUpdaterProblem",
+					_pPublicInterface->getHSelf(),
+					TEXT("Notepad++ updater is not compatible with XP due to the obsolete security layer under XP.\rDo you want to go to Notepad++ page to download the latest version?"),
+					TEXT("Notepad++ Updater"),
+					MB_YESNO);
+
 				if (res == IDYES)
 				{
 					::ShellExecute(NULL, TEXT("open"), TEXT("https://notepad-plus-plus.org/download/"), NULL, NULL, SW_SHOWNORMAL);
@@ -2703,24 +2901,35 @@ void Notepad_plus::command(int id)
 				generic_string updaterFullPath = updaterDir;
 				PathAppend(updaterFullPath, TEXT("gup.exe"));
 
-				generic_string param;
-				if (id == IDM_CONFUPDATERPROXY)
-				{
-					param = TEXT("-options");
-				}
-				else
-				{
-					param = TEXT("-verbose -v");
-					param += VERSION_VALUE;
 
-					if (NppParameters::getInstance()->isx64())
+#ifdef DEBUG // if not debug, then it's release
+				bool isCertifVerified = true;
+#else //RELEASE
+				// check the signature on updater
+				SecurityGard securityGard;
+				bool isCertifVerified = securityGard.checkModule(updaterFullPath, nm_gup);
+#endif
+				if (isCertifVerified)
+				{
+					generic_string param;
+					if (id == IDM_CONFUPDATERPROXY)
 					{
-						param += TEXT(" -px64");
+						param = TEXT("-options");
 					}
-				}
-				Process updater(updaterFullPath.c_str(), param.c_str(), updaterDir.c_str());
+					else
+					{
+						param = TEXT("-verbose -v");
+						param += VERSION_VALUE;
 
-				updater.run();
+						if (NppParameters::getInstance()->isx64())
+						{
+							param += TEXT(" -px64");
+						}
+					}
+					Process updater(updaterFullPath.c_str(), param.c_str(), updaterDir.c_str());
+
+					updater.run();
+				}
 			}
 			break;
 		}
@@ -2853,6 +3062,7 @@ void Notepad_plus::command(int id)
 			nbDoc += viewVisible(SUB_VIEW)?_subDocTab.nbItem():0;
 
 			bool doTaskList = ((NppParameters::getInstance())->getNppGUI())._doTaskList;
+			_isFolding = true;
 			if (nbDoc > 1)
 			{
 				bool direction = (id == IDC_NEXT_DOC)?dirDown:dirUp;
@@ -2871,6 +3081,7 @@ void Notepad_plus::command(int id)
 					}
 				}
 			}
+			_isFolding = false;
 			_linkTriggered = true;
 		}
         break;
@@ -2925,7 +3136,7 @@ void Notepad_plus::command(int id)
 				if (dlgNode)
 					dlgNode = _nativeLangSpeaker.searchDlgNode(dlgNode, "Window");
 			}
-			_windowsDlg.doDialog(dlgNode);
+			_windowsDlg.doDialog();
 		}
 		break;
 
@@ -3150,6 +3361,7 @@ void Notepad_plus::command(int id)
 			case IDM_FILE_CLOSEALL_BUT_CURRENT :
 			case IDM_FILE_CLOSEALL_TOLEFT :
 			case IDM_FILE_CLOSEALL_TORIGHT :
+			case IDM_FILE_CLOSEALL_UNCHANGED:
 			case IDM_FILE_SAVE :
 			case IDM_FILE_SAVEALL :
 			case IDM_FILE_RELOAD:

@@ -351,6 +351,8 @@ private :
 
 	DIALOG_TYPE _currentStatus;
 	RECT _findClosePos, _replaceClosePos, _findInFilesClosePos;
+	RECT _countInSelFramePos, _replaceInSelFramePos;
+	RECT _countInSelCheckPos, _replaceInSelCheckPos;
 
 	ScintillaEditView **_ppEditView;
 	Finder  *_pFinder;
@@ -358,6 +360,7 @@ private :
 	std::vector<Finder *> _findersOfFinder;
 
 	HWND _shiftTrickUpTip = nullptr;
+	HWND _2ButtonsTip = nullptr;
 
 
 	bool _isRTL;
